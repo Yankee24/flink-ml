@@ -29,6 +29,8 @@ import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.ml.linalg.DenseMatrix;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Matrix;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.typeinfo.DenseMatrixSerializer;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorSerializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -74,19 +76,21 @@ public class KnnModelData {
                 .map(
                         x ->
                                 new KnnModelData(
-                                        (DenseMatrix) x.getField(0),
-                                        (DenseVector) x.getField(1),
-                                        (DenseVector) x.getField(2)));
+                                        ((Matrix) x.getField(0)).toDense(),
+                                        ((Vector) x.getField(1)).toDense(),
+                                        ((Vector) x.getField(2)).toDense()));
     }
 
     /** Encoder for {@link KnnModelData}. */
     public static class ModelDataEncoder implements Encoder<KnnModelData> {
+        private final DenseVectorSerializer serializer = new DenseVectorSerializer();
+
         @Override
         public void encode(KnnModelData modelData, OutputStream outputStream) throws IOException {
             DataOutputView dataOutputView = new DataOutputViewStreamWrapper(outputStream);
             DenseMatrixSerializer.INSTANCE.serialize(modelData.packedFeatures, dataOutputView);
-            DenseVectorSerializer.INSTANCE.serialize(modelData.featureNormSquares, dataOutputView);
-            DenseVectorSerializer.INSTANCE.serialize(modelData.labels, dataOutputView);
+            serializer.serialize(modelData.featureNormSquares, dataOutputView);
+            serializer.serialize(modelData.labels, dataOutputView);
         }
     }
 
@@ -98,13 +102,14 @@ public class KnnModelData {
 
                 private final DataInputView source = new DataInputViewStreamWrapper(stream);
 
+                private final DenseVectorSerializer serializer = new DenseVectorSerializer();
+
                 @Override
                 public KnnModelData read() throws IOException {
                     try {
                         DenseMatrix matrix = DenseMatrixSerializer.INSTANCE.deserialize(source);
-                        DenseVector normSquares =
-                                DenseVectorSerializer.INSTANCE.deserialize(source);
-                        DenseVector labels = DenseVectorSerializer.INSTANCE.deserialize(source);
+                        DenseVector normSquares = serializer.deserialize(source);
+                        DenseVector labels = serializer.deserialize(source);
                         return new KnnModelData(matrix, normSquares, labels);
                     } catch (EOFException e) {
                         return null;

@@ -18,6 +18,16 @@
 
 package org.apache.flink.ml.api;
 
+import org.apache.flink.api.common.time.Time;
+import org.apache.flink.ml.common.window.CountTumblingWindows;
+import org.apache.flink.ml.common.window.EventTimeSessionWindows;
+import org.apache.flink.ml.common.window.EventTimeTumblingWindows;
+import org.apache.flink.ml.common.window.GlobalWindows;
+import org.apache.flink.ml.common.window.ProcessingTimeSessionWindows;
+import org.apache.flink.ml.common.window.ProcessingTimeTumblingWindows;
+import org.apache.flink.ml.common.window.Windows;
+import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.Vectors;
 import org.apache.flink.ml.param.BooleanParam;
 import org.apache.flink.ml.param.DoubleArrayArrayParam;
 import org.apache.flink.ml.param.DoubleArrayParam;
@@ -31,15 +41,20 @@ import org.apache.flink.ml.param.LongParam;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.param.ParamValidator;
 import org.apache.flink.ml.param.ParamValidators;
+import org.apache.flink.ml.param.StringArrayArrayParam;
 import org.apache.flink.ml.param.StringArrayParam;
 import org.apache.flink.ml.param.StringParam;
+import org.apache.flink.ml.param.VectorParam;
+import org.apache.flink.ml.param.WindowsParam;
 import org.apache.flink.ml.param.WithParams;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -48,8 +63,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.junit.Assert.assertEquals;
+
 /** Tests the behavior of Stage and WithParams. */
 public class StageTest {
+
+    private StreamTableEnvironment tEnv;
 
     // A WithParams subclass which has one parameter for each pre-defined parameter type.
     private interface MyParams<T> extends WithParams<T> {
@@ -73,8 +92,14 @@ public class StageTest {
         Param<Float> FLOAT_PARAM =
                 new FloatParam("floatParam", "Description", 3.0f, ParamValidators.lt(100));
 
+        Param<Float> SPECIAL_FLOAT_PARAM =
+                new FloatParam("specialFloatParam", "Description", Float.NaN);
+
         Param<Double> DOUBLE_PARAM =
                 new DoubleParam("doubleParam", "Description", 4.0, ParamValidators.lt(100));
+
+        Param<Double> SPECIAL_DOUBLE_PARAM =
+                new DoubleParam("specialDoubleParam", "Description", Double.NaN);
 
         Param<String> STRING_PARAM = new StringParam("stringParam", "Description", "5");
 
@@ -101,11 +126,27 @@ public class StageTest {
         Param<String[]> STRING_ARRAY_PARAM =
                 new StringArrayParam("stringArrayParam", "Description", new String[] {"14", "15"});
 
+        Param<String[][]> STRING_ARRAY_ARRAY_PARAM =
+                new StringArrayArrayParam(
+                        "stringArrayArrayParam",
+                        "Description",
+                        new String[][] {new String[] {"14", "15"}});
+
         Param<Double[][]> DOUBLE_ARRAY_ARRAY_PARAM =
                 new DoubleArrayArrayParam(
                         "doubleArrayArrayParam",
                         "Description",
                         new Double[][] {new Double[] {14.0, 15.0}, new Double[] {16.0, 17.0}});
+
+        Param<Vector> VECTOR_PARAM =
+                new VectorParam("vectorParam", "Description", Vectors.dense(1.0, 2.0, 3.0));
+
+        Param<Windows> WINDOWS_PARAM =
+                new WindowsParam(
+                        "windowsParam",
+                        "Description",
+                        CountTumblingWindows.of(100),
+                        ParamValidators.notNull());
     }
 
     /**
@@ -188,7 +229,7 @@ public class StageTest {
             throws IOException {
         for (Map.Entry<String, Object> entry : paramOverrides.entrySet()) {
             Param<?> param = stage.getParam(entry.getKey());
-            ReadWriteUtils.setParam(stage, param, entry.getValue());
+            ParamUtils.setParam(stage, param, entry.getValue());
         }
 
         String path = Files.createTempDirectory("").toString();
@@ -207,6 +248,12 @@ public class StageTest {
         }
         assertParamMapEquals(stage.getParamMap(), loadedStage.getParamMap());
         return loadedStage;
+    }
+
+    @Before
+    public void before() {
+        StreamExecutionEnvironment env = TestUtils.getExecutionEnvironment();
+        tEnv = StreamTableEnvironment.create(env);
     }
 
     @Test
@@ -325,6 +372,12 @@ public class StageTest {
         stage.set(MyParams.STRING_ARRAY_PARAM, new String[] {"50", "51"});
         Assert.assertArrayEquals(new String[] {"50", "51"}, stage.get(MyParams.STRING_ARRAY_PARAM));
 
+        stage.set(MyParams.VECTOR_PARAM, Vectors.dense(1, 5, 3));
+        Assert.assertEquals(Vectors.dense(1, 5, 3), stage.get(MyParams.VECTOR_PARAM));
+
+        stage.set(MyParams.WINDOWS_PARAM, CountTumblingWindows.of(50));
+        Assert.assertEquals(CountTumblingWindows.of(50), stage.get(MyParams.WINDOWS_PARAM));
+
         stage.set(
                 MyParams.DOUBLE_ARRAY_ARRAY_PARAM,
                 new Double[][] {new Double[] {50.0, 51.0}, new Double[] {52.0, 53.0}});
@@ -333,12 +386,22 @@ public class StageTest {
                 new Double[] {50.0, 51.0}, stage.get(MyParams.DOUBLE_ARRAY_ARRAY_PARAM)[0]);
         Assert.assertArrayEquals(
                 new Double[] {52.0, 53.0}, stage.get(MyParams.DOUBLE_ARRAY_ARRAY_PARAM)[1]);
+
+        stage.set(
+                MyParams.STRING_ARRAY_ARRAY_PARAM,
+                new String[][] {
+                    new String[] {"50", "51"},
+                    new String[] {"52", "53"}
+                });
+        Assert.assertEquals(2, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM).length);
+        Assert.assertArrayEquals(
+                new String[] {"50", "51"}, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM)[0]);
+        Assert.assertArrayEquals(
+                new String[] {"52", "53"}, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM)[1]);
     }
 
     @Test
     public void testStageSaveLoad() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
 
         stage.set(stage.paramWithNullDefault, 1);
@@ -354,9 +417,17 @@ public class StageTest {
         stage.set(MyParams.FLOAT_ARRAY_PARAM, new Float[] {50.0f, 51.0f});
         stage.set(MyParams.DOUBLE_ARRAY_PARAM, new Double[] {50.0, 51.0});
         stage.set(MyParams.STRING_ARRAY_PARAM, new String[] {"50", "51"});
+        stage.set(MyParams.VECTOR_PARAM, Vectors.dense(2, 3, 4));
+        stage.set(MyParams.WINDOWS_PARAM, EventTimeSessionWindows.withGap(Time.milliseconds(100)));
         stage.set(
                 MyParams.DOUBLE_ARRAY_ARRAY_PARAM,
                 new Double[][] {new Double[] {50.0, 51.0}, new Double[] {52.0, 53.0}});
+        stage.set(
+                MyParams.STRING_ARRAY_ARRAY_PARAM,
+                new String[][] {
+                    new String[] {"50", "51"},
+                    new String[] {"52", "53"}
+                });
 
         Stage<?> loadedStage = validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
 
@@ -381,12 +452,47 @@ public class StageTest {
                 new Double[] {50.0, 51.0}, stage.get(MyParams.DOUBLE_ARRAY_ARRAY_PARAM)[0]);
         Assert.assertArrayEquals(
                 new Double[] {52.0, 53.0}, stage.get(MyParams.DOUBLE_ARRAY_ARRAY_PARAM)[1]);
+        Assert.assertEquals(2, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM).length);
+        Assert.assertArrayEquals(
+                new String[] {"50", "51"}, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM)[0]);
+        Assert.assertArrayEquals(
+                new String[] {"52", "53"}, stage.get(MyParams.STRING_ARRAY_ARRAY_PARAM)[1]);
+        Assert.assertEquals(Vectors.dense(2, 3, 4), loadedStage.get(MyParams.VECTOR_PARAM));
+        Assert.assertEquals(
+                EventTimeSessionWindows.withGap(Time.milliseconds(100)),
+                loadedStage.get(MyParams.WINDOWS_PARAM));
+    }
+
+    @Test
+    public void testSaveLoadWithSpecialParams() throws IOException {
+        MyStage stage = new MyStage();
+        stage.set(stage.paramWithNullDefault, 1);
+
+        stage.set(MyParams.SPECIAL_FLOAT_PARAM, Float.NaN);
+        stage.set(MyParams.SPECIAL_DOUBLE_PARAM, Double.NaN);
+        Stage<?> loadedStage = validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
+        Assert.assertEquals(Float.NaN, loadedStage.get(MyParams.SPECIAL_FLOAT_PARAM), 0.0001);
+        Assert.assertEquals(Double.NaN, loadedStage.get(MyParams.SPECIAL_DOUBLE_PARAM), 0.0001);
+
+        stage.set(MyParams.SPECIAL_FLOAT_PARAM, Float.POSITIVE_INFINITY);
+        stage.set(MyParams.SPECIAL_DOUBLE_PARAM, Double.POSITIVE_INFINITY);
+        loadedStage = validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
+        Assert.assertEquals(
+                Float.POSITIVE_INFINITY, loadedStage.get(MyParams.SPECIAL_FLOAT_PARAM), 0.0001);
+        Assert.assertEquals(
+                Double.POSITIVE_INFINITY, loadedStage.get(MyParams.SPECIAL_DOUBLE_PARAM), 0.0001);
+
+        stage.set(MyParams.SPECIAL_FLOAT_PARAM, Float.NEGATIVE_INFINITY);
+        stage.set(MyParams.SPECIAL_DOUBLE_PARAM, Double.NEGATIVE_INFINITY);
+        loadedStage = validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
+        Assert.assertEquals(
+                Float.NEGATIVE_INFINITY, loadedStage.get(MyParams.SPECIAL_FLOAT_PARAM), 0.0001);
+        Assert.assertEquals(
+                Double.NEGATIVE_INFINITY, loadedStage.get(MyParams.SPECIAL_DOUBLE_PARAM), 0.0001);
     }
 
     @Test
     public void testStageSaveLoadWithParamOverrides() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStage stage = new MyStage();
         stage.set(stage.paramWithNullDefault, 1);
         Stage<?> loadedStage =
@@ -397,8 +503,6 @@ public class StageTest {
 
     @Test
     public void testStageLoadWithoutLoadMethod() throws IOException {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
         MyStageWithoutLoad stage = new MyStageWithoutLoad();
         try {
             validateStageSaveLoad(tEnv, stage, Collections.emptyMap());
@@ -463,5 +567,34 @@ public class StageTest {
         Assert.assertTrue(nonEmptyArray.validate(new String[] {"1"}));
         Assert.assertFalse(nonEmptyArray.validate(null));
         Assert.assertFalse(nonEmptyArray.validate(new String[0]));
+
+        ParamValidator<String[]> isSubArray = ParamValidators.isSubSet("a", "b", "c");
+        Assert.assertFalse(isSubArray.validate(null));
+        Assert.assertFalse(isSubArray.validate(new String[] {"c", "v"}));
+        Assert.assertTrue(isSubArray.validate(new String[] {"a", "b"}));
+        Assert.assertFalse(isSubArray.validate(new String[] {"e", "v"}));
+    }
+
+    @Test
+    public void testSaveLoadWindowsParams() throws Exception {
+        MyStage stage = new MyStage();
+
+        Windows[] testWindows =
+                new Windows[] {
+                    GlobalWindows.getInstance(),
+                    CountTumblingWindows.of(100),
+                    EventTimeTumblingWindows.of(Time.milliseconds(100)),
+                    ProcessingTimeTumblingWindows.of(Time.seconds(100)),
+                    EventTimeSessionWindows.withGap(Time.minutes(100)),
+                    ProcessingTimeSessionWindows.withGap(Time.hours(100))
+                };
+
+        for (Windows windows : testWindows) {
+            stage.set(MyParams.WINDOWS_PARAM, windows);
+            Stage<?> loadedStage =
+                    validateStageSaveLoad(
+                            tEnv, stage, Collections.singletonMap("paramWithNullDefault", 10));
+            assertEquals(windows, loadedStage.get(MyParams.WINDOWS_PARAM));
+        }
     }
 }

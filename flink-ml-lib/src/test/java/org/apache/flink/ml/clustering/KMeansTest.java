@@ -18,21 +18,18 @@
 
 package org.apache.flink.ml.clustering;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.clustering.kmeans.KMeans;
 import org.apache.flink.ml.clustering.kmeans.KMeansModel;
 import org.apache.flink.ml.clustering.kmeans.KMeansModelData;
 import org.apache.flink.ml.common.distance.EuclideanDistanceMeasure;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.SparseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
@@ -89,16 +86,9 @@ public class KMeansTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
-
-        Schema schema = Schema.newBuilder().column("f0", DataTypes.of(DenseVector.class)).build();
-        dataTable = tEnv.fromDataStream(env.fromCollection(DATA), schema).as("features");
+        dataTable = tEnv.fromDataStream(env.fromCollection(DATA)).as("features");
     }
 
     /**
@@ -114,7 +104,7 @@ public class KMeansTest extends AbstractTestBase {
             List<Row> rows, String featuresCol, String predictionCol) {
         Map<Integer, Set<DenseVector>> map = new HashMap<>();
         for (Row row : rows) {
-            DenseVector vector = (DenseVector) row.getField(featuresCol);
+            DenseVector vector = ((Vector) row.getField(featuresCol)).toDense();
             int predict = (Integer) row.getField(predictionCol);
             map.putIfAbsent(predict, new HashSet<>());
             map.get(predict).add(vector);
@@ -158,11 +148,6 @@ public class KMeansTest extends AbstractTestBase {
         assertEquals(
                 Arrays.asList("test_feature", "test_prediction"),
                 output.getResolvedSchema().getColumnNames());
-        List<Row> results = IteratorUtils.toList(output.execute().collect());
-        List<Set<DenseVector>> actualGroups =
-                groupFeaturesByPrediction(
-                        results, kmeans.getFeaturesCol(), kmeans.getPredictionCol());
-        assertTrue(CollectionUtils.isEqualCollection(expectedGroups, actualGroups));
     }
 
     @Test
@@ -171,8 +156,7 @@ public class KMeansTest extends AbstractTestBase {
                 Arrays.asList(
                         Vectors.dense(0.0, 0.1), Vectors.dense(0.0, 0.1), Vectors.dense(0.0, 0.1));
 
-        Schema schema = Schema.newBuilder().column("f0", DataTypes.of(DenseVector.class)).build();
-        Table input = tEnv.fromDataStream(env.fromCollection(data), schema).as("features");
+        Table input = tEnv.fromDataStream(env.fromCollection(data)).as("features");
 
         KMeans kmeans = new KMeans().setK(2);
         KMeansModel model = kmeans.fit(input);
@@ -204,14 +188,35 @@ public class KMeansTest extends AbstractTestBase {
     }
 
     @Test
+    public void testInputTypeConversion() {
+        dataTable = TestUtils.convertDataTypesToSparseInt(tEnv, dataTable);
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class}, TestUtils.getColumnDataTypes(dataTable));
+
+        KMeans kmeans = new KMeans().setMaxIter(2).setK(2);
+        KMeansModel model = kmeans.fit(dataTable);
+        Table output = model.transform(dataTable)[0];
+
+        assertEquals(
+                Arrays.asList("features", "prediction"),
+                output.getResolvedSchema().getColumnNames());
+        List<Row> results = IteratorUtils.toList(output.execute().collect());
+        List<Set<DenseVector>> actualGroups =
+                groupFeaturesByPrediction(
+                        results, kmeans.getFeaturesCol(), kmeans.getPredictionCol());
+        assertTrue(CollectionUtils.isEqualCollection(expectedGroups, actualGroups));
+    }
+
+    @Test
     public void testSaveLoadAndPredict() throws Exception {
         KMeans kmeans = new KMeans().setMaxIter(2).setK(2);
         KMeans loadedKmeans =
-                StageTestUtils.saveAndReload(
-                        tEnv, kmeans, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, kmeans, tempFolder.newFolder().getAbsolutePath(), KMeans::load);
         KMeansModel model = loadedKmeans.fit(dataTable);
         KMeansModel loadedModel =
-                StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv, model, tempFolder.newFolder().getAbsolutePath(), KMeansModel::load);
         Table output = loadedModel.transform(dataTable)[0];
         assertEquals(
                 Arrays.asList("centroids", "weights"),
@@ -252,7 +257,7 @@ public class KMeansTest extends AbstractTestBase {
         KMeans kmeans = new KMeans().setMaxIter(2).setK(2);
         KMeansModel modelA = kmeans.fit(dataTable);
         KMeansModel modelB = new KMeansModel().setModelData(modelA.getModelData());
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
 
         Table output = modelB.transform(dataTable)[0];
         List<Row> results = IteratorUtils.toList(output.execute().collect());

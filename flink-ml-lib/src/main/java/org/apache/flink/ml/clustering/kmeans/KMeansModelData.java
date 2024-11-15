@@ -29,6 +29,7 @@ import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorSerializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -129,12 +130,16 @@ public class KMeansModelData {
                 .map(
                         x ->
                                 new KMeansModelData(
-                                        (DenseVector[]) x.getField(0),
-                                        (DenseVector) x.getField(1)));
+                                        Arrays.stream(((Vector[]) x.getField(0)))
+                                                .map(Vector::toDense)
+                                                .toArray(DenseVector[]::new),
+                                        ((Vector) x.getField(1)).toDense()));
     }
 
     /** Data encoder for {@link KMeansModelData}. */
     public static class ModelDataEncoder implements Encoder<KMeansModelData> {
+        private final DenseVectorSerializer serializer = new DenseVectorSerializer();
+
         @Override
         public void encode(KMeansModelData modelData, OutputStream outputStream)
                 throws IOException {
@@ -142,11 +147,9 @@ public class KMeansModelData {
                     new DataOutputViewStreamWrapper(outputStream);
             IntSerializer.INSTANCE.serialize(modelData.centroids.length, outputViewStreamWrapper);
             for (DenseVector denseVector : modelData.centroids) {
-                DenseVectorSerializer.INSTANCE.serialize(
-                        denseVector, new DataOutputViewStreamWrapper(outputStream));
+                serializer.serialize(denseVector, new DataOutputViewStreamWrapper(outputStream));
             }
-            DenseVectorSerializer.INSTANCE.serialize(
-                    modelData.weights, new DataOutputViewStreamWrapper(outputStream));
+            serializer.serialize(modelData.weights, new DataOutputViewStreamWrapper(outputStream));
         }
     }
 
@@ -156,6 +159,7 @@ public class KMeansModelData {
         public Reader<KMeansModelData> createReader(
                 Configuration config, FSDataInputStream inputStream) {
             return new Reader<KMeansModelData>() {
+                private final DenseVectorSerializer serializer = new DenseVectorSerializer();
 
                 @Override
                 public KMeansModelData read() throws IOException {
@@ -166,12 +170,9 @@ public class KMeansModelData {
                                 IntSerializer.INSTANCE.deserialize(inputViewStreamWrapper);
                         DenseVector[] centroids = new DenseVector[numDenseVectors];
                         for (int i = 0; i < numDenseVectors; i++) {
-                            centroids[i] =
-                                    DenseVectorSerializer.INSTANCE.deserialize(
-                                            inputViewStreamWrapper);
+                            centroids[i] = serializer.deserialize(inputViewStreamWrapper);
                         }
-                        DenseVector weights =
-                                DenseVectorSerializer.INSTANCE.deserialize(inputViewStreamWrapper);
+                        DenseVector weights = serializer.deserialize(inputViewStreamWrapper);
                         return new KMeansModelData(centroids, weights);
                     } catch (EOFException e) {
                         return null;

@@ -19,7 +19,6 @@
 package org.apache.flink.ml.feature.standardscaler;
 
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.ml.api.Model;
 import org.apache.flink.ml.common.broadcast.BroadcastUtils;
@@ -27,9 +26,11 @@ import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
 import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.typeinfo.VectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.RowUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -65,8 +66,7 @@ public class StandardScalerModel
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
-                        ArrayUtils.addAll(
-                                inputTypeInfo.getFieldTypes(), TypeInformation.of(Vector.class)),
+                        ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), VectorTypeInfo.INSTANCE),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getOutputCol()));
 
         final String broadcastModelKey = "broadcastModelKey";
@@ -135,7 +135,7 @@ public class StandardScalerModel
                 BLAS.hDot(scale, outputVec);
             }
 
-            return Row.join(dataPoint, Row.of(outputVec));
+            return RowUtils.append(dataPoint, outputVec);
         }
     }
 

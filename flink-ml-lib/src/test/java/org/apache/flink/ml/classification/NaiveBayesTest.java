@@ -18,19 +18,18 @@
 
 package org.apache.flink.ml.classification;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.classification.naivebayes.NaiveBayes;
 import org.apache.flink.ml.classification.naivebayes.NaiveBayesModel;
 import org.apache.flink.ml.classification.naivebayes.NaiveBayesModelData;
+import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
@@ -50,24 +49,19 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
 /** Tests {@link NaiveBayes} and {@link NaiveBayesModel}. */
-public class NaiveBayesTest {
+public class NaiveBayesTest extends AbstractTestBase {
     @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
 
     private StreamExecutionEnvironment env;
     private StreamTableEnvironment tEnv;
     private Table trainTable;
     private Table predictTable;
-    private Map<Vector, Integer> expectedOutput;
+    private Map<Vector, Double> expectedOutput;
     private NaiveBayes estimator;
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<Row> trainData =
@@ -88,12 +82,12 @@ public class NaiveBayesTest {
         predictTable = tEnv.fromDataStream(env.fromCollection(predictData)).as("features");
 
         expectedOutput =
-                new HashMap<Vector, Integer>() {
+                new HashMap<Vector, Double>() {
                     {
-                        put(Vectors.dense(0, 1.), 11);
-                        put(Vectors.dense(0, 0.), 11);
-                        put(Vectors.dense(1, 0.), 10);
-                        put(Vectors.dense(1, 1.), 10);
+                        put(Vectors.dense(0, 1.), 11.0);
+                        put(Vectors.dense(0, 0.), 11.0);
+                        put(Vectors.dense(1, 0.), 10.0);
+                        put(Vectors.dense(1, 1.), 10.0);
                     }
                 };
 
@@ -115,14 +109,14 @@ public class NaiveBayesTest {
      * @param predictionCol Name of the column in the table that contains the prediction result
      * @return A map containing the collected results
      */
-    private static Map<Vector, Integer> executeAndCollect(
+    private static Map<Vector, Double> executeAndCollect(
             Table table, String featuresCol, String predictionCol) {
-        Map<Vector, Integer> map = new HashMap<>();
+        Map<Vector, Double> map = new HashMap<>();
         for (CloseableIterator<Row> it = table.execute().collect(); it.hasNext(); ) {
             Row row = it.next();
             map.put(
-                    (Vector) row.getField(featuresCol),
-                    ((Number) row.getField(predictionCol)).intValue());
+                    ((Vector) row.getField(featuresCol)).toDense(),
+                    (Double) row.getField(predictionCol));
         }
 
         return map;
@@ -165,7 +159,25 @@ public class NaiveBayesTest {
     public void testFitAndPredict() {
         NaiveBayesModel model = estimator.fit(trainTable);
         Table outputTable = model.transform(predictTable)[0];
-        Map<Vector, Integer> actualOutput =
+        Map<Vector, Double> actualOutput =
+                executeAndCollect(outputTable, model.getFeaturesCol(), model.getPredictionCol());
+        assertEquals(expectedOutput, actualOutput);
+    }
+
+    @Test
+    public void testInputTypeConversion() {
+        trainTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainTable);
+        predictTable = TestUtils.convertDataTypesToSparseInt(tEnv, predictTable);
+
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class, Integer.class},
+                TestUtils.getColumnDataTypes(trainTable));
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class}, TestUtils.getColumnDataTypes(predictTable));
+
+        NaiveBayesModel model = estimator.fit(trainTable);
+        Table outputTable = model.transform(predictTable)[0];
+        Map<Vector, Double> actualOutput =
                 executeAndCollect(outputTable, model.getFeaturesCol(), model.getPredictionCol());
         assertEquals(expectedOutput, actualOutput);
     }
@@ -182,7 +194,7 @@ public class NaiveBayesTest {
 
         NaiveBayesModel model = estimator.fit(trainTable);
         Table outputTable = model.transform(predictTable)[0];
-        Map<Vector, Integer> actualOutput =
+        Map<Vector, Double> actualOutput =
                 executeAndCollect(outputTable, model.getFeaturesCol(), model.getPredictionCol());
         assertEquals(expectedOutput, actualOutput);
     }
@@ -253,16 +265,24 @@ public class NaiveBayesTest {
     @Test
     public void testSaveLoad() throws Exception {
         estimator =
-                StageTestUtils.saveAndReload(
-                        tEnv, estimator, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        estimator,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        NaiveBayes::load);
 
         NaiveBayesModel model = estimator.fit(trainTable);
 
-        model = StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        NaiveBayesModel::load);
 
         Table outputTable = model.transform(predictTable)[0];
 
-        Map<Vector, Integer> actualOutput =
+        Map<Vector, Double> actualOutput =
                 executeAndCollect(outputTable, model.getFeaturesCol(), model.getPredictionCol());
         assertEquals(expectedOutput, actualOutput);
     }
@@ -295,11 +315,11 @@ public class NaiveBayesTest {
 
         Table modelData = modelA.getModelData()[0];
         NaiveBayesModel modelB = new NaiveBayesModel().setModelData(modelData);
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
 
         Table outputTable = modelB.transform(predictTable)[0];
 
-        Map<Vector, Integer> actualOutput =
+        Map<Vector, Double> actualOutput =
                 executeAndCollect(outputTable, modelB.getFeaturesCol(), modelB.getPredictionCol());
         assertEquals(expectedOutput, actualOutput);
     }

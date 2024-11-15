@@ -18,6 +18,7 @@
 
 package org.apache.flink.ml.classification.logisticregression;
 
+import org.apache.flink.ml.common.param.HasElasticNet;
 import org.apache.flink.ml.common.param.HasGlobalBatchSize;
 import org.apache.flink.ml.common.param.HasLabelCol;
 import org.apache.flink.ml.common.param.HasLearningRate;
@@ -37,6 +38,7 @@ public interface LogisticRegressionParams<T>
                 HasWeightCol<T>,
                 HasMaxIter<T>,
                 HasReg<T>,
+                HasElasticNet<T>,
                 HasLearningRate<T>,
                 HasGlobalBatchSize<T>,
                 HasTol<T>,

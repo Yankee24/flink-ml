@@ -24,42 +24,96 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.test.util.AbstractTestBase;
 
-import org.apache.commons.io.FileUtils;
-import org.junit.Rule;
+import org.junit.Before;
 import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
-import java.io.InputStream;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /** Tests benchmarks. */
 public class BenchmarkTest extends AbstractTestBase {
-    @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
+
+    private StreamExecutionEnvironment env;
+    private StreamTableEnvironment tEnv;
+
+    @Before
+    public void before() {
+        env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.getConfig().enableObjectReuse();
+        tEnv = StreamTableEnvironment.create(env);
+    }
 
     @Test
     public void testParseJsonFile() throws Exception {
-        File configFile = new File(tempFolder.newFolder().getAbsolutePath() + "/test-conf.json");
-        InputStream inputStream =
-                this.getClass().getClassLoader().getResourceAsStream("benchmark-conf.json");
-        FileUtils.copyInputStreamToFile(inputStream, configFile);
+        File configFile =
+                new File(
+                        Objects.requireNonNull(
+                                        this.getClass()
+                                                .getClassLoader()
+                                                .getResource("benchmark-demo.json"))
+                                .getPath());
 
         Map<String, ?> benchmarks = BenchmarkUtils.parseJsonFile(configFile.getAbsolutePath());
-        assertEquals(benchmarks.size(), 2);
+        assertEquals(benchmarks.size(), 8);
         assertTrue(benchmarks.containsKey("KMeans-1"));
         assertTrue(benchmarks.containsKey("KMeansModel-1"));
     }
 
     @Test
-    public void testRunBenchmark() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+    public void testJsonFileLegality() throws Exception {
+        final String demoJsonFileName = "benchmark-demo.json";
+        final List<String> illegalBenchmarks =
+                Arrays.asList("Undefined-Parameter", "Unmatch-Input");
 
-        Map<String, Object> params = new HashMap<>();
+        File resourcesDir =
+                new File(
+                                Objects.requireNonNull(
+                                                this.getClass()
+                                                        .getClassLoader()
+                                                        .getResource(demoJsonFileName))
+                                        .getPath())
+                        .getParentFile();
+        File[] jsonFiles = resourcesDir.listFiles((dir, name) -> name.endsWith(".json"));
+
+        for (File file : jsonFiles) {
+            Map<String, Map<String, Map<String, ?>>> benchmarks =
+                    BenchmarkUtils.parseJsonFile(file.getAbsolutePath());
+
+            for (Map.Entry<String, Map<String, Map<String, ?>>> entry : benchmarks.entrySet()) {
+                String benchmarkName = entry.getKey();
+                Map<String, Map<String, ?>> params = entry.getValue();
+
+                assertTrue(
+                        Arrays.asList("stage", "inputData", "modelData")
+                                .containsAll(params.keySet()));
+
+                if (demoJsonFileName.equals(file.getName())
+                        && illegalBenchmarks.contains(benchmarkName)) {
+                    try {
+                        BenchmarkUtils.runBenchmark(tEnv, benchmarkName, params, true);
+                        fail("Expected exception was not thrown");
+                    } catch (Exception e) {
+                        assertNotNull(e);
+                    }
+                } else {
+                    BenchmarkUtils.runBenchmark(tEnv, benchmarkName, params, true);
+                }
+            }
+        }
+    }
+
+    @Test
+    public void testRunBenchmark() throws Exception {
+        Map<String, Map<String, ?>> params = new HashMap<>();
 
         Map<String, Object> stageParams = new HashMap<>();
         stageParams.put("className", KMeans.class.getCanonicalName());
@@ -79,7 +133,7 @@ public class BenchmarkTest extends AbstractTestBase {
                 "paramMap",
                 new HashMap<String, Object>() {
                     {
-                        put("colNames", new String[] {"test_feature"});
+                        put("colNames", new String[][] {new String[] {"test_feature"}});
                         put("numValues", 1000L);
                         put("vectorDim", 10);
                     }
@@ -87,7 +141,8 @@ public class BenchmarkTest extends AbstractTestBase {
         params.put("inputData", inputDataParams);
 
         long estimatedTime = System.currentTimeMillis();
-        BenchmarkResult result = BenchmarkUtils.runBenchmark(tEnv, "testBenchmarkName", params);
+        BenchmarkResult result =
+                BenchmarkUtils.runBenchmark(tEnv, "testBenchmarkName", params, false);
         estimatedTime = System.currentTimeMillis() - estimatedTime;
 
         assertEquals("testBenchmarkName", result.name);

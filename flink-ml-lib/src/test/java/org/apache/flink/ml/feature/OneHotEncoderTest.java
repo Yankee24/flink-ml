@@ -18,21 +18,19 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.common.param.HasHandleInvalid;
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoder;
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoderModel;
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoderModelData;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
@@ -54,7 +52,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** Tests OneHotEncoder and OneHotEncoderModel. */
-public class OneHotEncoderTest {
+public class OneHotEncoderTest extends AbstractTestBase {
     @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
 
     private StreamExecutionEnvironment env;
@@ -66,12 +64,7 @@ public class OneHotEncoderTest {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
 
         List<Row> trainData = Arrays.asList(Row.of(0.0), Row.of(1.0), Row.of(2.0), Row.of(0.0));
@@ -148,6 +141,21 @@ public class OneHotEncoderTest {
 
     @Test
     public void testFitAndPredict() {
+        OneHotEncoderModel model = estimator.fit(trainTable);
+        Table outputTable = model.transform(predictTable)[0];
+        Map<Double, Vector>[] actualOutput =
+                executeAndCollect(outputTable, model.getInputCols(), model.getOutputCols());
+        assertArrayEquals(expectedOutput, actualOutput);
+    }
+
+    @Test
+    public void testInputTypeConversion() throws Exception {
+        trainTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainTable);
+        predictTable = TestUtils.convertDataTypesToSparseInt(tEnv, predictTable);
+        assertArrayEquals(new Class<?>[] {Integer.class}, TestUtils.getColumnDataTypes(trainTable));
+        assertArrayEquals(
+                new Class<?>[] {Integer.class}, TestUtils.getColumnDataTypes(predictTable));
+
         OneHotEncoderModel model = estimator.fit(trainTable);
         Table outputTable = model.transform(predictTable)[0];
         Map<Double, Vector>[] actualOutput =
@@ -255,10 +263,18 @@ public class OneHotEncoderTest {
     @Test
     public void testSaveLoad() throws Exception {
         estimator =
-                StageTestUtils.saveAndReload(
-                        tEnv, estimator, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        estimator,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        OneHotEncoder::load);
         OneHotEncoderModel model = estimator.fit(trainTable);
-        model = StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        OneHotEncoderModel::load);
         Table outputTable = model.transform(predictTable)[0];
         Map<Double, Vector>[] actualOutput =
                 executeAndCollect(outputTable, model.getInputCols(), model.getOutputCols());
@@ -282,7 +298,7 @@ public class OneHotEncoderTest {
 
         Table modelData = modelA.getModelData()[0];
         OneHotEncoderModel modelB = new OneHotEncoderModel().setModelData(modelData);
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
 
         Table outputTable = modelB.transform(predictTable)[0];
         Map<Double, Vector>[] actualOutput =

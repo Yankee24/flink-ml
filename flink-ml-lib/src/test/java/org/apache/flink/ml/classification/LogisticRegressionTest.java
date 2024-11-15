@@ -18,44 +18,53 @@
 
 package org.apache.flink.ml.classification;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegression;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModel;
 import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelData;
+import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelDataUtil;
+import org.apache.flink.ml.classification.logisticregression.LogisticRegressionModelServable;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.SparseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
+import org.apache.flink.ml.servable.api.DataFrame;
+import org.apache.flink.ml.servable.types.BasicType;
+import org.apache.flink.ml.servable.types.DataTypes;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.test.util.AbstractTestBase;
 import org.apache.flink.types.Row;
 
 import org.apache.commons.collections.IteratorUtils;
+import org.apache.commons.lang3.RandomUtils;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.ByteArrayInputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static org.apache.flink.ml.util.TestUtils.saveAndLoadServable;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /** Tests {@link LogisticRegression} and {@link LogisticRegressionModel}. */
-public class LogisticRegressionTest {
+public class LogisticRegressionTest extends AbstractTestBase {
 
     @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
 
@@ -90,7 +99,7 @@ public class LogisticRegressionTest {
                     Row.of(Vectors.dense(15, 2, 3, 4), 1., 5.));
 
     private static final double[] expectedCoefficient =
-            new double[] {0.528, -0.286, -0.429, -0.572};
+            new double[] {0.525, -0.283, -0.425, -0.567};
 
     private static final double TOLERANCE = 1e-7;
 
@@ -98,14 +107,11 @@ public class LogisticRegressionTest {
 
     private Table multinomialDataTable;
 
+    private DataFrame binomialDataDataFrame;
+
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         Collections.shuffle(binomialTrainData);
         binomialDataTable =
@@ -114,9 +120,7 @@ public class LogisticRegressionTest {
                                 binomialTrainData,
                                 new RowTypeInfo(
                                         new TypeInformation[] {
-                                            TypeInformation.of(DenseVector.class),
-                                            Types.DOUBLE,
-                                            Types.DOUBLE
+                                            DenseVectorTypeInfo.INSTANCE, Types.DOUBLE, Types.DOUBLE
                                         },
                                         new String[] {"features", "label", "weight"})));
         multinomialDataTable =
@@ -125,22 +129,49 @@ public class LogisticRegressionTest {
                                 multinomialTrainData,
                                 new RowTypeInfo(
                                         new TypeInformation[] {
-                                            TypeInformation.of(DenseVector.class),
-                                            Types.DOUBLE,
-                                            Types.DOUBLE
+                                            DenseVectorTypeInfo.INSTANCE, Types.DOUBLE, Types.DOUBLE
                                         },
                                         new String[] {"features", "label", "weight"})));
+        binomialDataDataFrame =
+                TestUtils.constructDataFrame(
+                        new ArrayList<>(Arrays.asList("features", "label", "weight")),
+                        new ArrayList<>(
+                                Arrays.asList(
+                                        DataTypes.VECTOR(BasicType.DOUBLE),
+                                        DataTypes.DOUBLE,
+                                        DataTypes.DOUBLE)),
+                        binomialTrainData);
     }
 
-    @SuppressWarnings("ConstantConditions")
+    @SuppressWarnings("ConstantConditions, unchecked")
     private void verifyPredictionResult(
             Table output, String featuresCol, String predictionCol, String rawPredictionCol)
             throws Exception {
         List<Row> predResult = IteratorUtils.toList(tEnv.toDataStream(output).executeAndCollect());
         for (Row predictionRow : predResult) {
-            DenseVector feature = (DenseVector) predictionRow.getField(featuresCol);
+            DenseVector feature = ((Vector) predictionRow.getField(featuresCol)).toDense();
             double prediction = (double) predictionRow.getField(predictionCol);
             DenseVector rawPrediction = (DenseVector) predictionRow.getField(rawPredictionCol);
+            if (feature.get(0) <= 5) {
+                assertEquals(0, prediction, TOLERANCE);
+                assertTrue(rawPrediction.get(0) > 0.5);
+            } else {
+                assertEquals(1, prediction, TOLERANCE);
+                assertTrue(rawPrediction.get(0) < 0.5);
+            }
+        }
+    }
+
+    private void verifyPredictionResult(
+            DataFrame output, String featuresCol, String predictionCol, String rawPredictionCol) {
+        int featuresColIndex = output.getIndex(featuresCol);
+        int predictionColIndex = output.getIndex(predictionCol);
+        int rawPredictionColIndex = output.getIndex(rawPredictionCol);
+
+        for (org.apache.flink.ml.servable.api.Row predictionRow : output.collect()) {
+            DenseVector feature = ((Vector) predictionRow.get(featuresColIndex)).toDense();
+            double prediction = (double) predictionRow.get(predictionColIndex);
+            DenseVector rawPrediction = (DenseVector) predictionRow.get(rawPredictionColIndex);
             if (feature.get(0) <= 5) {
                 assertEquals(0, prediction, TOLERANCE);
                 assertTrue(rawPrediction.get(0) > 0.5);
@@ -154,17 +185,18 @@ public class LogisticRegressionTest {
     @Test
     public void testParam() {
         LogisticRegression logisticRegression = new LogisticRegression();
-        assertEquals(logisticRegression.getLabelCol(), "label");
+        assertEquals("features", logisticRegression.getFeaturesCol());
+        assertEquals("label", logisticRegression.getLabelCol());
         assertNull(logisticRegression.getWeightCol());
-        assertEquals(logisticRegression.getMaxIter(), 20);
-        assertEquals(logisticRegression.getReg(), 0, TOLERANCE);
-        assertEquals(logisticRegression.getLearningRate(), 0.1, TOLERANCE);
-        assertEquals(logisticRegression.getGlobalBatchSize(), 32);
-        assertEquals(logisticRegression.getTol(), 1e-6, TOLERANCE);
-        assertEquals(logisticRegression.getMultiClass(), "auto");
-        assertEquals(logisticRegression.getFeaturesCol(), "features");
-        assertEquals(logisticRegression.getPredictionCol(), "prediction");
-        assertEquals(logisticRegression.getRawPredictionCol(), "rawPrediction");
+        assertEquals(20, logisticRegression.getMaxIter());
+        assertEquals(1e-6, logisticRegression.getTol(), TOLERANCE);
+        assertEquals(0.1, logisticRegression.getLearningRate(), TOLERANCE);
+        assertEquals(32, logisticRegression.getGlobalBatchSize());
+        assertEquals(0, logisticRegression.getReg(), TOLERANCE);
+        assertEquals(0, logisticRegression.getElasticNet(), TOLERANCE);
+        assertEquals("auto", logisticRegression.getMultiClass());
+        assertEquals("prediction", logisticRegression.getPredictionCol());
+        assertEquals("rawPrediction", logisticRegression.getRawPredictionCol());
 
         logisticRegression
                 .setFeaturesCol("test_features")
@@ -175,20 +207,22 @@ public class LogisticRegressionTest {
                 .setLearningRate(0.5)
                 .setGlobalBatchSize(1000)
                 .setReg(0.1)
+                .setElasticNet(0.5)
                 .setMultiClass("binomial")
                 .setPredictionCol("test_predictionCol")
                 .setRawPredictionCol("test_rawPredictionCol");
-        assertEquals(logisticRegression.getFeaturesCol(), "test_features");
-        assertEquals(logisticRegression.getLabelCol(), "test_label");
-        assertEquals(logisticRegression.getWeightCol(), "test_weight");
-        assertEquals(logisticRegression.getMaxIter(), 1000);
-        assertEquals(logisticRegression.getTol(), 0.001, TOLERANCE);
-        assertEquals(logisticRegression.getLearningRate(), 0.5, TOLERANCE);
-        assertEquals(logisticRegression.getGlobalBatchSize(), 1000);
-        assertEquals(logisticRegression.getReg(), 0.1, TOLERANCE);
-        assertEquals(logisticRegression.getMultiClass(), "binomial");
-        assertEquals(logisticRegression.getPredictionCol(), "test_predictionCol");
-        assertEquals(logisticRegression.getRawPredictionCol(), "test_rawPredictionCol");
+        assertEquals("test_features", logisticRegression.getFeaturesCol());
+        assertEquals("test_label", logisticRegression.getLabelCol());
+        assertEquals("test_weight", logisticRegression.getWeightCol());
+        assertEquals(1000, logisticRegression.getMaxIter());
+        assertEquals(0.001, logisticRegression.getTol(), TOLERANCE);
+        assertEquals(0.5, logisticRegression.getLearningRate(), TOLERANCE);
+        assertEquals(1000, logisticRegression.getGlobalBatchSize());
+        assertEquals(0.1, logisticRegression.getReg(), TOLERANCE);
+        assertEquals(0.5, logisticRegression.getElasticNet(), TOLERANCE);
+        assertEquals("binomial", logisticRegression.getMultiClass());
+        assertEquals("test_predictionCol", logisticRegression.getPredictionCol());
+        assertEquals("test_rawPredictionCol", logisticRegression.getRawPredictionCol());
     }
 
     @Test
@@ -224,15 +258,39 @@ public class LogisticRegressionTest {
     }
 
     @Test
+    public void testInputTypeConversion() throws Exception {
+        binomialDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, binomialDataTable);
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class, Integer.class, Integer.class},
+                TestUtils.getColumnDataTypes(binomialDataTable));
+
+        LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
+        Table output = logisticRegression.fit(binomialDataTable).transform(binomialDataTable)[0];
+        verifyPredictionResult(
+                output,
+                logisticRegression.getFeaturesCol(),
+                logisticRegression.getPredictionCol(),
+                logisticRegression.getRawPredictionCol());
+    }
+
+    @Test
     public void testSaveLoadAndPredict() throws Exception {
         LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
         logisticRegression =
-                StageTestUtils.saveAndReload(
-                        tEnv, logisticRegression, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        logisticRegression,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        LogisticRegression::load);
         LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
-        model = StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        LogisticRegressionModel::load);
         assertEquals(
-                Collections.singletonList("coefficient"),
+                Arrays.asList("coefficient", "modelVersion"),
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
         Table output = model.transform(binomialDataTable)[0];
         verifyPredictionResult(
@@ -243,15 +301,16 @@ public class LogisticRegressionTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void testGetModelData() throws Exception {
         LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
         LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
-        LogisticRegressionModelData modelData =
-                LogisticRegressionModelData.getModelDataStream(model.getModelData()[0])
-                        .executeAndCollect()
-                        .next();
-        assertNotNull(modelData);
-        assertArrayEquals(expectedCoefficient, modelData.coefficient.values, 0.1);
+        List<LogisticRegressionModelData> modelData =
+                IteratorUtils.toList(
+                        LogisticRegressionModelDataUtil.getModelDataStream(model.getModelData()[0])
+                                .executeAndCollect());
+        assertEquals(1, modelData.size());
+        assertArrayEquals(expectedCoefficient, modelData.get(0).coefficient.values, 0.1);
     }
 
     @Test
@@ -260,7 +319,7 @@ public class LogisticRegressionTest {
         LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
 
         LogisticRegressionModel newModel = new LogisticRegressionModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(binomialDataTable)[0];
         verifyPredictionResult(
@@ -268,6 +327,47 @@ public class LogisticRegressionTest {
                 logisticRegression.getFeaturesCol(),
                 logisticRegression.getPredictionCol(),
                 logisticRegression.getRawPredictionCol());
+    }
+
+    @Test
+    public void testSaveLoadServableAndPredict() throws Exception {
+        LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
+        LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
+
+        LogisticRegressionModelServable servable =
+                saveAndLoadServable(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        LogisticRegressionModel::loadServable);
+
+        DataFrame output = servable.transform(binomialDataDataFrame);
+        verifyPredictionResult(
+                output,
+                servable.getFeaturesCol(),
+                servable.getPredictionCol(),
+                servable.getRawPredictionCol());
+    }
+
+    @Test
+    public void testSetModelDataToServable() throws Exception {
+        LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
+        LogisticRegressionModel model = logisticRegression.fit(binomialDataTable);
+        byte[] serializedModelData =
+                LogisticRegressionModelDataUtil.getModelDataByteStream(model.getModelData()[0])
+                        .executeAndCollect()
+                        .next();
+
+        LogisticRegressionModelServable servable = new LogisticRegressionModelServable();
+        ParamUtils.updateExistingParams(servable, model.getParamMap());
+        servable.setModelData(new ByteArrayInputStream(serializedModelData));
+
+        DataFrame output = servable.transform(binomialDataDataFrame);
+        verifyPredictionResult(
+                output,
+                servable.getFeaturesCol(),
+                servable.getPredictionCol(),
+                servable.getRawPredictionCol());
     }
 
     @Test
@@ -285,13 +385,53 @@ public class LogisticRegressionTest {
 
     @Test
     public void testMoreSubtaskThanData() throws Exception {
-        env.setParallelism(12);
-        LogisticRegression logisticRegression = new LogisticRegression().setWeightCol("weight");
+        List<Row> binomialTrainData =
+                Arrays.asList(
+                        Row.of(Vectors.dense(1, 2, 3, 4), 0., 1.),
+                        Row.of(Vectors.dense(11, 2, 3, 4), 1., 1.));
+
+        Table binomialDataTable =
+                tEnv.fromDataStream(
+                        env.fromCollection(
+                                binomialTrainData,
+                                new RowTypeInfo(
+                                        new TypeInformation[] {
+                                            DenseVectorTypeInfo.INSTANCE, Types.DOUBLE, Types.DOUBLE
+                                        },
+                                        new String[] {"features", "label", "weight"})));
+
+        LogisticRegression logisticRegression =
+                new LogisticRegression().setWeightCol("weight").setGlobalBatchSize(128);
         Table output = logisticRegression.fit(binomialDataTable).transform(binomialDataTable)[0];
         verifyPredictionResult(
                 output,
                 logisticRegression.getFeaturesCol(),
                 logisticRegression.getPredictionCol(),
                 logisticRegression.getRawPredictionCol());
+    }
+
+    @Test
+    public void testRegularization() throws Exception {
+        checkRegularization(0, RandomUtils.nextDouble(0, 1), expectedCoefficient);
+        checkRegularization(0.1, 0, new double[] {0.484, -0.258, -0.388, -0.517});
+        checkRegularization(0.1, 1, new double[] {0.417, -0.145, -0.312, -0.480});
+        checkRegularization(0.1, 0.5, new double[] {0.451, -0.203, -0.351, -0.498});
+    }
+
+    @SuppressWarnings("unchecked")
+    private void checkRegularization(double reg, double elasticNet, double[] expectedCoefficient)
+            throws Exception {
+        LogisticRegressionModel model =
+                new LogisticRegression()
+                        .setWeightCol("weight")
+                        .setReg(reg)
+                        .setElasticNet(elasticNet)
+                        .fit(binomialDataTable);
+        List<LogisticRegressionModelData> modelData =
+                IteratorUtils.toList(
+                        LogisticRegressionModelDataUtil.getModelDataStream(model.getModelData()[0])
+                                .executeAndCollect());
+        final double errorTol = 1e-3;
+        assertArrayEquals(expectedCoefficient, modelData.get(0).coefficient.values, errorTol);
     }
 }

@@ -21,11 +21,44 @@ package org.apache.flink.ml.feature.vectorassembler;
 import org.apache.flink.ml.common.param.HasHandleInvalid;
 import org.apache.flink.ml.common.param.HasInputCols;
 import org.apache.flink.ml.common.param.HasOutputCol;
+import org.apache.flink.ml.param.IntArrayParam;
+import org.apache.flink.ml.param.Param;
+import org.apache.flink.ml.param.ParamValidator;
 
 /**
- * Params of VectorAssembler.
+ * Params of {@link VectorAssembler}.
  *
  * @param <T> The class type of this instance.
  */
 public interface VectorAssemblerParams<T>
-        extends HasInputCols<T>, HasOutputCol<T>, HasHandleInvalid<T> {}
+        extends HasInputCols<T>, HasOutputCol<T>, HasHandleInvalid<T> {
+    Param<Integer[]> INPUT_SIZES =
+            new IntArrayParam(
+                    "inputSizes",
+                    "Sizes of the input elements to be assembled.",
+                    null,
+                    sizesValidator());
+
+    default Integer[] getInputSizes() {
+        return get(INPUT_SIZES);
+    }
+
+    default T setInputSizes(Integer... value) {
+        return set(INPUT_SIZES, value);
+    }
+
+    // Checks the inputSizes parameter.
+    static ParamValidator<Integer[]> sizesValidator() {
+        return inputSizes -> {
+            if (inputSizes == null) {
+                return false;
+            }
+            for (Integer size : inputSizes) {
+                if (size <= 0) {
+                    return false;
+                }
+            }
+            return inputSizes.length != 0;
+        };
+    }
+}

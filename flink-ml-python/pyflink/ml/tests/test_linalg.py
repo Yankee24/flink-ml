@@ -19,7 +19,7 @@ import unittest
 import numpy as np
 import array
 
-from pyflink.ml.core.linalg import SparseVector, DenseVector
+from pyflink.ml.linalg import SparseVector, DenseVector
 
 
 class VectorTests(unittest.TestCase):
@@ -77,3 +77,18 @@ class VectorTests(unittest.TestCase):
         self.assertFalse(v2 == v4)
         self.assertFalse(v1 == v5)
         self.assertFalse(v1 == v6)
+
+    def test_get_set(self):
+        v1 = DenseVector([0.0, 1.0, 0.0, 5.5])
+        self.assertEqual(0.0, v1.get(0))
+        v1.set(0, 1.0)
+        self.assertEqual(1.0, v1.get(0))
+
+        v2 = SparseVector(4, [(1, 1.0), (3, 5.5)])
+        self.assertEqual(0.0, v2.get(0))
+
+        v2.set(0, 1.0)
+        self.assertEqual(1.0, v2.get(0))
+
+        v2.set(1, 2.0)
+        self.assertEqual(2.0, v2.get(1))

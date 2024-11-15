@@ -18,17 +18,15 @@
 
 package org.apache.flink.ml.feature;
 
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.standardscaler.StandardScaler;
 import org.apache.flink.ml.feature.standardscaler.StandardScalerModel;
 import org.apache.flink.ml.feature.standardscaler.StandardScalerModelData;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -87,12 +85,7 @@ public class StandardScalerTest extends AbstractTestBase {
 
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         denseTable = tEnv.fromDataStream(env.fromCollection(denseInput)).as("input");
     }
@@ -183,18 +176,37 @@ public class StandardScalerTest extends AbstractTestBase {
     }
 
     @Test
+    public void testInputTypeConversion() throws Exception {
+        denseTable = TestUtils.convertDataTypesToSparseInt(tEnv, denseTable);
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class}, TestUtils.getColumnDataTypes(denseTable));
+
+        StandardScaler standardScaler = new StandardScaler().setWithMean(true);
+        Table output = standardScaler.fit(denseTable).transform(denseTable)[0];
+        verifyPredictionResult(expectedResWithMeanAndStd, output, standardScaler.getOutputCol());
+    }
+
+    @Test
     public void testSaveLoadAndPredict() throws Exception {
         StandardScaler standardScaler = new StandardScaler();
         standardScaler =
-                StageTestUtils.saveAndReload(
-                        tEnv, standardScaler, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        standardScaler,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        StandardScaler::load);
 
         StandardScalerModel model = standardScaler.fit(denseTable);
-        model = StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+        model =
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        StandardScalerModel::load);
 
         assertEquals(
                 Arrays.asList("mean", "std"),
-                model.getModelData()[0].getResolvedSchema().getColumnNames());
+                model.getModelData()[0].getResolvedSchema().getColumnNames().subList(0, 2));
 
         Table output = model.transform(denseTable)[0];
         verifyPredictionResult(expectedResWithStd, output, standardScaler.getOutputCol());
@@ -208,7 +220,8 @@ public class StandardScalerTest extends AbstractTestBase {
         Table modelDataTable = model.getModelData()[0];
 
         assertEquals(
-                Arrays.asList("mean", "std"), modelDataTable.getResolvedSchema().getColumnNames());
+                Arrays.asList("mean", "std"),
+                modelDataTable.getResolvedSchema().getColumnNames().subList(0, 2));
 
         List<StandardScalerModelData> collectedModelData =
                 (List<StandardScalerModelData>)
@@ -228,7 +241,7 @@ public class StandardScalerTest extends AbstractTestBase {
         StandardScalerModel model = standardScaler.fit(denseTable);
 
         StandardScalerModel newModel = new StandardScalerModel();
-        ReadWriteUtils.updateExistingParams(newModel, model.getParamMap());
+        ParamUtils.updateExistingParams(newModel, model.getParamMap());
         newModel.setModelData(model.getModelData());
         Table output = newModel.transform(denseTable)[0];
 
@@ -256,8 +269,7 @@ public class StandardScalerTest extends AbstractTestBase {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    public void testFitOnEmptyData() throws Exception {
+    public void testFitOnEmptyData() {
         Table emptyTable =
                 tEnv.fromDataStream(env.fromCollection(denseInput).filter(x -> x.getArity() == 0))
                         .as("input");

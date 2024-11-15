@@ -1,7 +1,7 @@
 ---
 title: Classification
 bookCollapseSection: true
-weight: 2
+weight: 1
 aliases:
   - /operators/feature/
 ---

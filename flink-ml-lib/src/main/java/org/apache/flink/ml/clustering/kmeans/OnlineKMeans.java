@@ -18,7 +18,6 @@
 
 package org.apache.flink.ml.clustering.kmeans;
 
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.state.ListState;
@@ -31,31 +30,30 @@ import org.apache.flink.iteration.IterationBodyResult;
 import org.apache.flink.iteration.Iterations;
 import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
+import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.common.distance.DistanceMeasure;
 import org.apache.flink.ml.linalg.BLAS;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.VectorWithNorm;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.functions.windowing.AllWindowFunction;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
-import org.apache.flink.streaming.api.windowing.windows.GlobalWindow;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
 import org.apache.flink.types.Row;
-import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.collections.IteratorUtils;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -112,7 +110,7 @@ public class OnlineKMeans
 
         Table onlineModelDataTable = tEnv.fromDataStream(onlineModelData);
         OnlineKMeansModel model = new OnlineKMeansModel().setModelData(onlineModelDataTable);
-        ReadWriteUtils.updateExistingParams(model, paramMap);
+        ParamUtils.updateExistingParams(model, paramMap);
         return model;
     }
 
@@ -168,10 +166,7 @@ public class OnlineKMeans
                             + "of elements in each batch. Some subtasks might be idling forever.");
 
             DataStream<KMeansModelData> newModelData =
-                    points.countWindowAll(batchSize)
-                            .apply(new GlobalBatchCreator())
-                            .flatMap(new GlobalBatchSplitter(parallelism))
-                            .rebalance()
+                    DataStreamUtils.generateBatchData(points, parallelism, batchSize)
                             .connect(modelData.broadcast())
                             .transform(
                                     "ModelDataLocalUpdater",
@@ -282,6 +277,10 @@ public class OnlineKMeans
             KMeansModelData modelData =
                     OperatorStateUtils.getUniqueElement(modelDataState, "modelData").get();
             DenseVector[] centroids = modelData.centroids;
+            VectorWithNorm[] centroidsWithNorm = new VectorWithNorm[modelData.centroids.length];
+            for (int i = 0; i < centroidsWithNorm.length; i++) {
+                centroidsWithNorm[i] = new VectorWithNorm(modelData.centroids[i]);
+            }
             DenseVector weights = modelData.weights;
             modelDataState.clear();
 
@@ -302,7 +301,7 @@ public class OnlineKMeans
             }
             for (DenseVector point : points) {
                 int closestCentroidId =
-                        KMeans.findClosestCentroidId(centroids, point, distanceMeasure);
+                        distanceMeasure.findClosest(centroidsWithNorm, new VectorWithNorm(point));
                 counts[closestCentroidId]++;
                 BLAS.axpy(1.0, point, sums[closestCentroidId]);
             }
@@ -335,53 +334,7 @@ public class OnlineKMeans
 
         @Override
         public DenseVector map(Row row) {
-            return (DenseVector) row.getField(featuresCol);
-        }
-    }
-
-    /**
-     * An operator that splits a global batch into evenly-sized local batches, and distributes them
-     * to downstream operator.
-     */
-    private static class GlobalBatchSplitter
-            implements FlatMapFunction<DenseVector[], DenseVector[]> {
-        private final int downStreamParallelism;
-
-        private GlobalBatchSplitter(int downStreamParallelism) {
-            this.downStreamParallelism = downStreamParallelism;
-        }
-
-        @Override
-        public void flatMap(DenseVector[] values, Collector<DenseVector[]> collector) {
-            int div = values.length / downStreamParallelism;
-            int mod = values.length % downStreamParallelism;
-
-            int offset = 0;
-            int i = 0;
-
-            int size = div + 1;
-            for (; i < mod; i++) {
-                collector.collect(Arrays.copyOfRange(values, offset, offset + size));
-                offset += size;
-            }
-
-            size = div;
-            for (; i < downStreamParallelism; i++) {
-                collector.collect(Arrays.copyOfRange(values, offset, offset + size));
-                offset += size;
-            }
-        }
-    }
-
-    private static class GlobalBatchCreator
-            implements AllWindowFunction<DenseVector, DenseVector[], GlobalWindow> {
-        @Override
-        public void apply(
-                GlobalWindow timeWindow,
-                Iterable<DenseVector> iterable,
-                Collector<DenseVector[]> collector) {
-            List<DenseVector> points = IteratorUtils.toList(iterable.iterator());
-            collector.collect(points.toArray(new DenseVector[0]));
+            return ((Vector) row.getField(featuresCol)).toDense();
         }
     }
 

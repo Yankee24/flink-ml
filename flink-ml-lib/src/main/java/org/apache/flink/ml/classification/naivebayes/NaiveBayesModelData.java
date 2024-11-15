@@ -21,6 +21,7 @@ package org.apache.flink.ml.classification.naivebayes;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.Encoder;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.base.DoubleSerializer;
 import org.apache.flink.api.common.typeutils.base.MapSerializer;
 import org.apache.flink.configuration.Configuration;
@@ -29,7 +30,9 @@ import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.linalg.typeinfo.DenseVectorSerializer;
+import org.apache.flink.ml.linalg.typeinfo.DenseVectorTypeInfo;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -49,6 +52,21 @@ import java.util.Map;
  * to save/load model data.
  */
 public class NaiveBayesModelData {
+
+    private static final Map<String, TypeInformation<?>> fields;
+
+    static {
+        fields = new HashMap<>();
+        fields.put(
+                "theta",
+                Types.OBJECT_ARRAY(Types.OBJECT_ARRAY(Types.MAP(Types.DOUBLE, Types.DOUBLE))));
+        fields.put("piArray", DenseVectorTypeInfo.INSTANCE);
+        fields.put("labels", DenseVectorTypeInfo.INSTANCE);
+    }
+
+    public static final TypeInformation<NaiveBayesModelData> TYPE_INFO =
+            Types.POJO(NaiveBayesModelData.class, fields);
+
     /**
      * Log of class conditional probabilities, whose dimension is C (number of classes) by D (number
      * of features).
@@ -85,12 +103,15 @@ public class NaiveBayesModelData {
                                 row ->
                                         new NaiveBayesModelData(
                                                 (Map<Double, Double>[][]) row.getField(0),
-                                                (DenseVector) row.getField(1),
-                                                (DenseVector) row.getField(2)));
+                                                ((Vector) row.getField(1)).toDense(),
+                                                ((Vector) row.getField(2)).toDense()),
+                        TYPE_INFO);
     }
 
     /** Data encoder for the {@link NaiveBayesModelData}. */
     public static class ModelDataEncoder implements Encoder<NaiveBayesModelData> {
+        private final DenseVectorSerializer serializer = new DenseVectorSerializer();
+
         @Override
         public void encode(NaiveBayesModelData modelData, OutputStream outputStream)
                 throws IOException {
@@ -100,9 +121,9 @@ public class NaiveBayesModelData {
             MapSerializer<Double, Double> mapSerializer =
                     new MapSerializer<>(DoubleSerializer.INSTANCE, DoubleSerializer.INSTANCE);
 
-            DenseVectorSerializer.INSTANCE.serialize(modelData.labels, outputViewStreamWrapper);
+            serializer.serialize(modelData.labels, outputViewStreamWrapper);
 
-            DenseVectorSerializer.INSTANCE.serialize(modelData.piArray, outputViewStreamWrapper);
+            serializer.serialize(modelData.piArray, outputViewStreamWrapper);
 
             outputViewStreamWrapper.writeInt(modelData.theta.length);
             outputViewStreamWrapper.writeInt(modelData.theta[0].length);
@@ -120,6 +141,7 @@ public class NaiveBayesModelData {
         public Reader<NaiveBayesModelData> createReader(
                 Configuration config, FSDataInputStream inputStream) {
             return new Reader<NaiveBayesModelData>() {
+                private final DenseVectorSerializer serializer = new DenseVectorSerializer();
 
                 @Override
                 public NaiveBayesModelData read() throws IOException {
@@ -130,11 +152,9 @@ public class NaiveBayesModelData {
                                 new MapSerializer<>(
                                         DoubleSerializer.INSTANCE, DoubleSerializer.INSTANCE);
 
-                        DenseVector labels =
-                                DenseVectorSerializer.INSTANCE.deserialize(inputViewStreamWrapper);
+                        DenseVector labels = serializer.deserialize(inputViewStreamWrapper);
 
-                        DenseVector piArray =
-                                DenseVectorSerializer.INSTANCE.deserialize(inputViewStreamWrapper);
+                        DenseVector piArray = serializer.deserialize(inputViewStreamWrapper);
 
                         int featureSize = inputViewStreamWrapper.readInt();
                         int numLabels = inputViewStreamWrapper.readInt();
@@ -159,7 +179,7 @@ public class NaiveBayesModelData {
 
         @Override
         public TypeInformation<NaiveBayesModelData> getProducedType() {
-            return TypeInformation.of(NaiveBayesModelData.class);
+            return TYPE_INFO;
         }
     }
 }

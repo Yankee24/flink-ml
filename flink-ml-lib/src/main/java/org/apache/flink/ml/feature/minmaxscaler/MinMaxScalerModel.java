@@ -25,9 +25,11 @@ import org.apache.flink.ml.api.Model;
 import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.RowUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -42,9 +44,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * A Model which do a minMax scaler operation using the model data computed by {@link MinMaxScaler}.
- */
+/** A Model which transforms data using the model data computed by {@link MinMaxScaler}. */
 public class MinMaxScalerModel
         implements Model<MinMaxScalerModel>, MinMaxScalerParams<MinMaxScalerModel> {
     private final Map<Param<?>, Object> paramMap = new HashMap<>();
@@ -166,13 +166,13 @@ public class MinMaxScalerModel
                     }
                 }
             }
-            DenseVector inputVec = (DenseVector) row.getField(inputCol);
+            DenseVector inputVec = ((Vector) row.getField(inputCol)).toDense();
             DenseVector outputVec = new DenseVector(scaleVector.size());
             for (int i = 0; i < scaleVector.size(); ++i) {
                 outputVec.values[i] =
                         inputVec.values[i] * scaleVector.values[i] + offsetVector.values[i];
             }
-            return Row.join(row, Row.of(outputVec));
+            return RowUtils.append(row, outputVec);
         }
     }
 }

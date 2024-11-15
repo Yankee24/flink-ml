@@ -28,6 +28,7 @@ import org.apache.flink.ml.api.Stage;
 import org.apache.flink.ml.benchmark.datagenerator.DataGenerator;
 import org.apache.flink.ml.benchmark.datagenerator.InputDataGenerator;
 import org.apache.flink.ml.common.datastream.TableUtils;
+import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
@@ -35,32 +36,33 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonProcessingException;
-
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /** Utility methods for benchmarks. */
 public class BenchmarkUtils {
     /** Loads benchmark configuration maps from the provided json file. */
     @SuppressWarnings("unchecked")
-    public static Map<String, ?> parseJsonFile(String path) throws IOException {
+    public static Map<String, Map<String, Map<String, ?>>> parseJsonFile(String path)
+            throws IOException {
         InputStream inputStream = new FileInputStream(path);
         Map<String, ?> jsonMap = ReadWriteUtils.OBJECT_MAPPER.readValue(inputStream, Map.class);
         Preconditions.checkArgument(
                 jsonMap.containsKey(Benchmark.VERSION_KEY)
                         && jsonMap.get(Benchmark.VERSION_KEY).equals(1));
 
-        return jsonMap.entrySet().stream()
-                .filter(x -> !x.getKey().equals(Benchmark.VERSION_KEY))
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        Map<String, Map<String, Map<String, ?>>> result = new HashMap<>();
+        for (Map.Entry<String, ?> entry : jsonMap.entrySet()) {
+            if (entry.getKey().equals(Benchmark.VERSION_KEY)) {
+                continue;
+            }
+            result.put(entry.getKey(), (Map<String, Map<String, ?>>) entry.getValue());
+        }
+        return result;
     }
 
     /**
@@ -71,17 +73,20 @@ public class BenchmarkUtils {
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static BenchmarkResult runBenchmark(
-            StreamTableEnvironment tEnv, String name, Map<String, ?> params) throws Exception {
-        Stage stage = ReadWriteUtils.instantiateWithParams((Map<String, ?>) params.get("stage"));
+            StreamTableEnvironment tEnv,
+            String name,
+            Map<String, Map<String, ?>> params,
+            boolean dryRun)
+            throws Exception {
+        Stage stage = ParamUtils.instantiateWithParams(params.get("stage"));
         InputDataGenerator inputDataGenerator =
-                ReadWriteUtils.instantiateWithParams((Map<String, ?>) params.get("inputData"));
+                ParamUtils.instantiateWithParams(params.get("inputData"));
         DataGenerator modelDataGenerator = null;
         if (params.containsKey("modelData")) {
-            modelDataGenerator =
-                    ReadWriteUtils.instantiateWithParams((Map<String, ?>) params.get("modelData"));
+            modelDataGenerator = ParamUtils.instantiateWithParams(params.get("modelData"));
         }
 
-        return runBenchmark(tEnv, name, stage, inputDataGenerator, modelDataGenerator);
+        return runBenchmark(tEnv, name, stage, inputDataGenerator, modelDataGenerator, dryRun);
     }
 
     /**
@@ -95,7 +100,8 @@ public class BenchmarkUtils {
             String name,
             Stage<?> stage,
             InputDataGenerator<?> inputDataGenerator,
-            DataGenerator<?> modelDataGenerator)
+            DataGenerator<?> modelDataGenerator,
+            boolean dryRun)
             throws Exception {
         StreamExecutionEnvironment env = TableUtils.getExecutionEnvironment(tEnv);
 
@@ -117,6 +123,10 @@ public class BenchmarkUtils {
             tEnv.toDataStream(table).addSink(new CountingAndDiscardingSink<>());
         }
 
+        if (dryRun) {
+            return null;
+        }
+
         JobExecutionResult executionResult = env.execute("Flink ML Benchmark Job " + name);
 
         double totalTimeMs = (double) executionResult.getNetRuntime(TimeUnit.MILLISECONDS);
@@ -133,25 +143,6 @@ public class BenchmarkUtils {
                 inputThroughput,
                 outputRecordNum,
                 outputThroughput);
-    }
-
-    /** Converts the benchmark results to a json string as a map. */
-    public static String getResultsMapAsJson(BenchmarkResult... results)
-            throws JsonProcessingException {
-        List<Map<String, ?>> resultsMap = new ArrayList<>();
-        for (BenchmarkResult result : results) {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("name", result.name);
-            map.put("totalTimeMs", result.totalTimeMs);
-            map.put("inputRecordNum", result.inputRecordNum);
-            map.put("inputThroughput", result.inputThroughput);
-            map.put("outputRecordNum", result.outputRecordNum);
-            map.put("outputThroughput", result.outputThroughput);
-            resultsMap.add(map);
-        }
-        return ReadWriteUtils.OBJECT_MAPPER
-                .writerWithDefaultPrettyPrinter()
-                .writeValueAsString(resultsMap);
     }
 
     /**

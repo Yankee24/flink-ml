@@ -18,16 +18,20 @@
 import unittest
 from typing import Dict, Any
 
-from pyflink.ml.core.param import Param
-from pyflink.ml.lib.param import HasDistanceMeasure, HasFeaturesCol, HasGlobalBatchSize, \
+from pyflink.ml.param import Param
+from pyflink.ml.common.param import HasDistanceMeasure, HasFeaturesCol, HasGlobalBatchSize, \
     HasHandleInvalid, HasInputCols, HasLabelCol, HasLearningRate, HasMaxIter, HasMultiClass, \
-    HasOutputCols, HasPredictionCol, HasRawPredictionCol, HasReg, HasSeed, HasTol, HasWeightCol
+    HasOutputCols, HasPredictionCol, HasRawPredictionCol, HasReg, HasSeed, HasTol, HasWeightCol, \
+    HasWindows, HasRelativeError, HasFlatten, HasModelVersionCol, HasMaxAllowedModelDelayMs
+
+from pyflink.ml.common.window import GlobalWindows, CountTumblingWindows
 
 
 class TestParams(HasDistanceMeasure, HasFeaturesCol, HasGlobalBatchSize, HasHandleInvalid,
                  HasInputCols, HasLabelCol, HasLearningRate, HasMaxIter, HasMultiClass,
                  HasOutputCols, HasPredictionCol, HasRawPredictionCol, HasReg, HasSeed, HasTol,
-                 HasWeightCol):
+                 HasWeightCol, HasWindows, HasRelativeError, HasFlatten, HasModelVersionCol,
+                 HasMaxAllowedModelDelayMs):
     def __init__(self):
         self._param_map = {}
 
@@ -41,7 +45,8 @@ class ParamTests(unittest.TestCase):
         distance_measure = param.DISTANCE_MEASURE
         self.assertEqual(distance_measure.name, "distance_measure")
         self.assertEqual(distance_measure.description,
-                         "Distance measure. Supported options: 'euclidean' and 'cosine'.")
+                         "Distance measure. Supported options: "
+                         "'euclidean', 'manhattan' and 'cosine'.")
         self.assertEqual(distance_measure.default_value, "euclidean")
 
         param.set_distance_measure("cosine")
@@ -85,8 +90,8 @@ class ParamTests(unittest.TestCase):
         self.assertEqual(input_cols.description, "Input column names.")
         self.assertEqual(input_cols.default_value, None)
 
-        param.set_input_cols(['a', 'b', 'c'])
-        self.assertEqual(param.get_input_cols(), ['a', 'b', 'c'])
+        param.set_input_cols('a', 'b', 'c')
+        self.assertEqual(param.get_input_cols(), ('a', 'b', 'c'))
 
     def test_label_col_param(self):
         param = TestParams()
@@ -137,8 +142,8 @@ class ParamTests(unittest.TestCase):
         self.assertEqual(output_cols.description, "Output column names.")
         self.assertEqual(output_cols.default_value, None)
 
-        param.set_output_cols(['a', 'b'])
-        self.assertEqual(param.get_output_cols(), ['a', 'b'])
+        param.set_output_cols('a', 'b')
+        self.assertEqual(param.get_output_cols(), ('a', 'b'))
 
     def test_prediction_col_param(self):
         param = TestParams()
@@ -199,3 +204,66 @@ class ParamTests(unittest.TestCase):
 
         param.set_weight_col('test_weight_col')
         self.assertEqual(param.get_weight_col(), 'test_weight_col')
+
+    def test_windows(self):
+        param = TestParams()
+        windows = param.WINDOWS
+        self.assertEqual(windows.name, "windows")
+        self.assertEqual(windows.description,
+                         "Windowing strategy that determines how to create "
+                         "mini-batches from input data.")
+        self.assertEqual(windows.default_value, GlobalWindows())
+
+        param.set_windows(CountTumblingWindows.of(100))
+        self.assertEqual(param.get_windows(), CountTumblingWindows.of(100))
+
+    def test_relative_error(self):
+        param = TestParams()
+        relative_error = param.RELATIVE_ERROR
+        self.assertEqual(relative_error.name, "relative_error")
+        self.assertEqual(relative_error.description,
+                         "The relative target precision for the approximate"
+                         " quantile algorithm.")
+        self.assertEqual(relative_error.default_value, 0.001)
+
+        param.set_relative_error(0.1)
+        self.assertEqual(param.get_relative_error(), 0.1)
+
+    def test_flatten(self):
+        param = TestParams()
+        flatten = param.FLATTEN
+        self.assertEqual(flatten.name, "flatten")
+        self.assertEqual(flatten.description,
+                         "If false, the returned table contains only a "
+                         "single row, otherwise, one row per feature.")
+        self.assertFalse(flatten.default_value)
+
+        param.set_flatten(True)
+        self.assertTrue(param.get_flatten())
+
+    def test_model_version_col(self):
+        param = TestParams()
+        model_version_col = param.MODEL_VERSION_COL
+        self.assertEqual(model_version_col.name, "model_version_col")
+        self.assertEqual(model_version_col.description,
+                         "The name of the column which contains the version of "
+                         "the model data that the input data is predicted with. "
+                         "The version should be a 64-bit integer.",)
+        self.assertEqual(model_version_col.default_value, "version")
+
+        param.set_model_version_col("test_version")
+        self.assertEqual(param.get_model_version_col(), "test_version")
+
+    def test_max_allowed_model_delay_ms(self):
+        param = TestParams()
+        max_allowed_model_delay_ms = param.MAX_ALLOWED_MODEL_DELAY_MS
+        self.assertEqual(max_allowed_model_delay_ms.name, "max_allowed_model_delay_ms")
+        self.assertEqual(max_allowed_model_delay_ms.description,
+                         "The maximum difference allowed between the timestamps of the "
+                         "input record and the model data that is used to predict that "
+                         "input record. This param only works when the input contains "
+                         "event time.")
+        self.assertEqual(max_allowed_model_delay_ms.default_value, 0)
+
+        param.set_max_allowed_model_delay_ms(100)
+        self.assertEqual(param.get_max_allowed_model_delay_ms(), 100)

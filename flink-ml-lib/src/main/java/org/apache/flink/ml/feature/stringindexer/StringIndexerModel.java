@@ -29,6 +29,7 @@ import org.apache.flink.ml.common.param.HasHandleInvalid;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.RowUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -46,11 +47,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * A Model which transforms input string/numeric column(s) to integer column(s) using the model data
+ * A Model which transforms input string/numeric column(s) to double column(s) using the model data
  * computed by {@link StringIndexer}.
  *
- * <p>The `keep` option of {@link HasHandleInvalid} means that we put the invalid entries in a
- * special bucket, whose index is the number of distinct values in this column.
+ * <p>The `keep` option of {@link HasHandleInvalid} means that we transform the invalid input into a
+ * special index, whose value is the number of distinct values in this column.
  */
 public class StringIndexerModel
         implements Model<StringIndexerModel>, StringIndexerModelParams<StringIndexerModel> {
@@ -107,7 +108,7 @@ public class StringIndexerModel
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         TypeInformation<?>[] outputTypes = new TypeInformation[outputCols.length];
-        Arrays.fill(outputTypes, BasicTypeInfo.INT_TYPE_INFO);
+        Arrays.fill(outputTypes, BasicTypeInfo.DOUBLE_TYPE_INFO);
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
                         ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), outputTypes),
@@ -132,9 +133,9 @@ public class StringIndexerModel
         return new Table[] {tEnv.fromDataStream(result)};
     }
 
-    /** Maps the input columns to integer values according to the model data. */
+    /** Maps the input columns to double values according to the model data. */
     private static class String2Index extends RichFlatMapFunction<Row, Row> {
-        private HashMap<String, Integer>[] modelDataMap;
+        private HashMap<String, Double>[] modelDataMap;
         private final String broadcastModelKey;
         private final String[] inputCols;
         private final String handleInValid;
@@ -155,7 +156,7 @@ public class StringIndexerModel
                                 getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
                 String[][] stringsArray = modelData.stringArrays;
                 for (int i = 0; i < stringsArray.length; i++) {
-                    int idx = 0;
+                    double idx = 0.0;
                     modelDataMap[i] = new HashMap<>(stringsArray[i].length);
                     for (String string : stringsArray[i]) {
                         modelDataMap[i].put(string, idx++);
@@ -163,11 +164,13 @@ public class StringIndexerModel
                 }
             }
 
-            Row outputIndices = new Row(inputCols.length);
+            Row result = RowUtils.cloneWithReservedFields(input, inputCols.length);
             for (int i = 0; i < inputCols.length; i++) {
                 Object objVal = input.getField(inputCols[i]);
                 String stringVal;
-                if (objVal instanceof String) {
+                if (null == objVal) {
+                    stringVal = null;
+                } else if (objVal instanceof String) {
                     stringVal = (String) objVal;
                 } else if (objVal instanceof Number) {
                     stringVal = String.valueOf(objVal);
@@ -177,7 +180,7 @@ public class StringIndexerModel
                 }
 
                 if (modelDataMap[i].containsKey(stringVal)) {
-                    outputIndices.setField(i, modelDataMap[i].get(stringVal));
+                    result.setField(i + input.getArity(), modelDataMap[i].get(stringVal));
                 } else {
                     switch (handleInValid) {
                         case SKIP_INVALID:
@@ -190,7 +193,7 @@ public class StringIndexerModel
                                             + HANDLE_INVALID
                                             + " parameter for more options.");
                         case KEEP_INVALID:
-                            outputIndices.setField(i, modelDataMap[i].size());
+                            result.setField(i + input.getArity(), (double) modelDataMap[i].size());
                             break;
                         default:
                             throw new UnsupportedOperationException(
@@ -199,7 +202,7 @@ public class StringIndexerModel
                 }
             }
 
-            out.collect(Row.join(input, outputIndices));
+            out.collect(result);
         }
     }
 }

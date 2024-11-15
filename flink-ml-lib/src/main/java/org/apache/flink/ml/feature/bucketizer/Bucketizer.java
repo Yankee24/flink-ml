@@ -28,6 +28,7 @@ import org.apache.flink.ml.common.param.HasHandleInvalid;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.RowUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -44,8 +45,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Bucketizer is a transformer that maps multiple columns of continuous features to multiple columns
- * of discrete features, i.e., buckets indices. The indices are in [0, numSplitsInThisColumn - 1].
+ * A Transformer that maps multiple columns of continuous features to multiple columns of discrete
+ * features, i.e., buckets indices. The indices are in [0, numSplitsInThisColumn - 1].
  *
  * <p>The `keep` option of {@link HasHandleInvalid} means that we put the invalid data in the last
  * bucket of the splits, whose index is the number of the buckets.
@@ -71,28 +72,30 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
 
         RowTypeInfo inputTypeInfo = TableUtils.getRowTypeInfo(inputs[0].getResolvedSchema());
         TypeInformation<?>[] outputTypes = new TypeInformation[outputCols.length];
-        Arrays.fill(outputTypes, BasicTypeInfo.INT_TYPE_INFO);
+        Arrays.fill(outputTypes, BasicTypeInfo.DOUBLE_TYPE_INFO);
         RowTypeInfo outputTypeInfo =
                 new RowTypeInfo(
                         ArrayUtils.addAll(inputTypeInfo.getFieldTypes(), outputTypes),
                         ArrayUtils.addAll(inputTypeInfo.getFieldNames(), getOutputCols()));
 
+        int[] inputColumnIndexes =
+                TableUtils.getColumnIndexes(inputs[0].getResolvedSchema(), inputCols);
         DataStream<Row> result =
                 tEnv.toDataStream(inputs[0])
                         .flatMap(
-                                new FindBucketFunction(inputCols, splitsArray, getHandleInvalid()),
+                                new FindBucketFunction(
+                                        inputColumnIndexes, splitsArray, getHandleInvalid()),
                                 outputTypeInfo);
         return new Table[] {tEnv.fromDataStream(result)};
     }
 
     /** Finds the bucket index for each continuous feature of an input data point. */
     private static class FindBucketFunction implements FlatMapFunction<Row, Row> {
-        private final String[] inputCols;
+        private final int[] inputCols;
         private final String handleInvalid;
         private final Double[][] splitsArray;
 
-        public FindBucketFunction(
-                String[] inputCols, Double[][] splitsArray, String handleInvalid) {
+        public FindBucketFunction(int[] inputCols, Double[][] splitsArray, String handleInvalid) {
             this.inputCols = inputCols;
             this.splitsArray = splitsArray;
             this.handleInvalid = handleInvalid;
@@ -100,7 +103,7 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
 
         @Override
         public void flatMap(Row value, Collector<Row> out) {
-            Row outputRow = new Row(inputCols.length);
+            Row result = RowUtils.cloneWithReservedFields(value, inputCols.length);
 
             for (int i = 0; i < inputCols.length; i++) {
                 double feature = ((Number) value.getField(inputCols[i])).doubleValue();
@@ -108,18 +111,18 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
                 boolean isInvalid = false;
 
                 if (!Double.isNaN(feature)) {
-                    int index = Arrays.binarySearch(splits, feature);
+                    double index = Arrays.binarySearch(splits, feature);
                     if (index >= 0) {
-                        if (index == inputCols.length - 1) {
+                        if (index == splits.length - 1) {
                             index--;
                         }
-                        outputRow.setField(i, index);
+                        result.setField(i + value.getArity(), index);
                     } else {
                         index = -index - 1;
-                        if (index == 0 || index == inputCols.length) {
+                        if (index == 0 || index == splits.length) {
                             isInvalid = true;
                         } else {
-                            outputRow.setField(i, index - 1);
+                            result.setField(i + value.getArity(), index - 1);
                         }
                     }
                 } else {
@@ -136,7 +139,7 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
                         case SKIP_INVALID:
                             return;
                         case KEEP_INVALID:
-                            outputRow.setField(i, splits.length - 1);
+                            result.setField(i + value.getArity(), (double) splits.length - 1);
                             break;
                         default:
                             throw new UnsupportedOperationException(
@@ -144,7 +147,7 @@ public class Bucketizer implements Transformer<Bucketizer>, BucketizerParams<Buc
                     }
                 }
             }
-            out.collect(Row.join(value, outputRow));
+            out.collect(result);
         }
     }
 

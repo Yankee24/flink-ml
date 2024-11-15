@@ -1,0 +1,70 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Python Tests
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    branches: [ '**' ]
+  pull_request:
+    branches: [ '**' ]
+  workflow_dispatch:
+
+jobs:
+  python-tests:
+    if: github.repository == 'apache/flink-ml' || github.event_name == 'workflow_dispatch'
+    name: Python ${{ matrix.python-version }} tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ['macOS-12', 'ubuntu-20.04']
+        # TODO: Revert back to 3.7 once the Mac agent's Python v3.7 contains bz2 again,
+        # the issue can be tracked via https://github.com/actions/setup-python/issues/682.
+        python-version: ['3.7.16', '3.8']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@v1
+        with:
+          java-version: 1.8
+      - name: Build
+        run: mvn clean install -DskipTests --no-transfer-progress
+      - name: Install python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        working-directory: flink-ml-python/dev
+        run: python -m pip install -r dev-requirements.txt
+      - name: Install Flink ML
+        working-directory: flink-ml-python
+        run: python setup.py sdist && python -m pip install dist/*.tar.gz
+      - name: Check code style
+        working-directory: flink-ml-python
+        run: python -m flake8 --config=setup.cfg
+      - name: Check type annotations
+        working-directory: flink-ml-python
+        run: python -m mypy --config=setup.cfg
+      - name: Test the source code
+        working-directory: flink-ml-python
+        run: |
+          pytest pyflink/ml/feature
+          pytest pyflink/ml --ignore=pyflink/ml/feature/tests/
+          pytest pyflink/examples
+
+

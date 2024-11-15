@@ -23,8 +23,8 @@ from shutil import copytree, rmtree
 
 from setuptools import setup
 
-if sys.version_info < (3, 6) or sys.version_info > (3, 8):
-    print("Only Python versions between 3.6 and 3.8 (inclusive) are supported for Flink ML. "
+if sys.version_info < (3, 7) or sys.version_info >= (3, 9):
+    print("Only Python versions between 3.7 and 3.8 (inclusive) are supported for Flink ML. "
           "The current Python version is %s." % python_version(), file=sys.stderr)
     sys.exit(-1)
 
@@ -55,6 +55,7 @@ with io.open(os.path.join(this_directory, 'README.md'), 'r', encoding='utf-8') a
 
 TEMP_PATH = "deps"
 
+LIB_TEMP_PATH = os.path.join(TEMP_PATH, "lib")
 EXAMPLES_TEMP_PATH = os.path.join(TEMP_PATH, "examples")
 
 in_flink_ml_source = os.path.isfile("../flink-ml-core/src/main/java/org/apache/flink/ml/api/"
@@ -69,26 +70,41 @@ try:
                   file=sys.stderr)
             sys.exit(-1)
         flink_ml_version = VERSION.replace(".dev0", "-SNAPSHOT")
+        FLINK_ML_HOME = os.path.abspath(
+            "../flink-ml-dist/target/flink-ml-%s-bin/flink-ml-%s"
+            % (flink_ml_version, flink_ml_version))
         FLINK_ML_ROOT = os.path.abspath("..")
 
+        LIB_PATH = os.path.join(FLINK_ML_HOME, "lib")
         EXAMPLES_PATH = os.path.join(this_directory, "pyflink/examples")
 
-        try:
+        if getattr(os, "symlink", None) is not None:
+            os.symlink(LIB_PATH, LIB_TEMP_PATH)
             os.symlink(EXAMPLES_PATH, EXAMPLES_TEMP_PATH)
-        except BaseException:  # pylint: disable=broad-except
+        else:
+            copytree(LIB_PATH, LIB_TEMP_PATH)
             copytree(EXAMPLES_PATH, EXAMPLES_TEMP_PATH)
 
     PACKAGES = ['pyflink',
                 'pyflink.ml',
-                'pyflink.ml.core',
-                'pyflink.ml.lib',
+                'pyflink.ml.classification',
+                'pyflink.ml.clustering',
+                'pyflink.ml.evaluation',
+                'pyflink.ml.feature',
+                'pyflink.ml.recommendation',
+                'pyflink.ml.regression',
+                'pyflink.ml.stats',
                 'pyflink.ml.util',
+                'pyflink.ml.common',
+                'pyflink.lib',
                 'pyflink.examples']
 
     PACKAGE_DIR = {
+        'pyflink.lib': TEMP_PATH + '/lib',
         'pyflink.examples': TEMP_PATH + '/examples'}
 
     PACKAGE_DATA = {
+        'pyflink.lib': ['*.jar'],
         'pyflink.examples': ['*.py', '*/*.py']}
 
     setup(
@@ -102,9 +118,9 @@ try:
         license='https://www.apache.org/licenses/LICENSE-2.0',
         author='Apache Software Foundation',
         author_email='dev@flink.apache.org',
-        python_requires='>=3.6',
-        install_requires=['apache-flink==1.14.0', 'pandas>=1.0,<1.2.0', 'jsonpickle==2.0.0',
-                          'cloudpickle==1.2.2', 'numpy>=1.14.3,<1.20'],
+        python_requires='>=3.7',
+        install_requires=['apache-flink==1.17.1', 'jsonpickle==2.0.0', 'cloudpickle==2.2.0',
+                          'pandas>=1.3.0,<1.4.0', 'numpy>=1.21.4,<1.22.0'],
         tests_require=['pytest==4.4.1'],
         description='Apache Flink ML Python API',
         long_description=long_description,
@@ -112,7 +128,6 @@ try:
         classifiers=[
             'Development Status :: 5 - Production/Stable',
             'License :: OSI Approved :: Apache Software License',
-            'Programming Language :: Python :: 3.6',
             'Programming Language :: Python :: 3.7',
             'Programming Language :: Python :: 3.8'],
     )

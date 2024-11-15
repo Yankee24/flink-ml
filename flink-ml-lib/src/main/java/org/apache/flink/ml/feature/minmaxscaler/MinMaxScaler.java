@@ -27,6 +27,7 @@ import org.apache.flink.iteration.operator.OperatorStateUtils;
 import org.apache.flink.ml.api.Estimator;
 import org.apache.flink.ml.common.datastream.DataStreamUtils;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
@@ -51,7 +52,7 @@ import java.util.Map;
 
 /**
  * An Estimator which implements the MinMaxScaler algorithm. This algorithm rescales feature values
- * to a common range [min, max] which defined by user.
+ * to a common range [min, max] defined by user.
  *
  * <blockquote>
  *
@@ -81,7 +82,7 @@ public class MinMaxScaler
                 tEnv.toDataStream(inputs[0])
                         .map(
                                 (MapFunction<Row, DenseVector>)
-                                        value -> (DenseVector) value.getField(inputCol));
+                                        value -> ((Vector) value.getField(inputCol)).toDense());
         DataStream<DenseVector> minMaxValues =
                 inputData
                         .transform(
@@ -110,7 +111,7 @@ public class MinMaxScaler
 
         MinMaxScalerModel model =
                 new MinMaxScalerModel().setModelData(tEnv.fromDataStream(modelData));
-        ReadWriteUtils.updateExistingParams(model, getParamMap());
+        ParamUtils.updateExistingParams(model, getParamMap());
         return model;
     }
 
@@ -118,7 +119,7 @@ public class MinMaxScaler
      * A stream operator to compute the min and max values in each partition of the input bounded
      * data stream.
      */
-    private static class MinMaxReduceFunctionOperator extends AbstractStreamOperator<DenseVector>
+    public static class MinMaxReduceFunctionOperator extends AbstractStreamOperator<DenseVector>
             implements OneInputStreamOperator<DenseVector, DenseVector>, BoundedOneInput {
         private ListState<DenseVector> minState;
         private ListState<DenseVector> maxState;

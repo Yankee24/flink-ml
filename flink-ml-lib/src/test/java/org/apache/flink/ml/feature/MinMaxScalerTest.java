@@ -19,20 +19,20 @@
 package org.apache.flink.ml.feature;
 
 import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.ml.feature.minmaxscaler.MinMaxScaler;
 import org.apache.flink.ml.feature.minmaxscaler.MinMaxScalerModel;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.SparseVector;
 import org.apache.flink.ml.linalg.Vectors;
-import org.apache.flink.ml.util.ReadWriteUtils;
-import org.apache.flink.ml.util.StageTestUtils;
+import org.apache.flink.ml.util.ParamUtils;
+import org.apache.flink.ml.util.TestUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableImpl;
+import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.types.Row;
 
 import org.apache.commons.collections.IteratorUtils;
@@ -46,10 +46,11 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
 /** Tests {@link MinMaxScaler} and {@link MinMaxScalerModel}. */
-public class MinMaxScalerTest {
+public class MinMaxScalerTest extends AbstractTestBase {
     @Rule public final TemporaryFolder tempFolder = new TemporaryFolder();
     private StreamExecutionEnvironment env;
     private StreamTableEnvironment tEnv;
@@ -77,25 +78,9 @@ public class MinMaxScalerTest {
                             Vectors.dense(0.5, 0.125),
                             Vectors.dense(0.75, 0.225)));
 
-    /** Note: this comparator imposes orderings that are inconsistent with equals. */
-    private static int compare(DenseVector first, DenseVector second) {
-        for (int i = 0; i < first.size(); i++) {
-            int cmp = Double.compare(first.get(i), second.get(i));
-            if (cmp != 0) {
-                return cmp;
-            }
-        }
-        return 0;
-    }
-
     @Before
     public void before() {
-        Configuration config = new Configuration();
-        config.set(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, true);
-        env = StreamExecutionEnvironment.getExecutionEnvironment(config);
-        env.setParallelism(4);
-        env.enableCheckpointing(100);
-        env.setRestartStrategy(RestartStrategies.noRestart());
+        env = TestUtils.getExecutionEnvironment();
         tEnv = StreamTableEnvironment.create(env);
         trainDataTable = tEnv.fromDataStream(env.fromCollection(TRAIN_DATA)).as("input");
         predictDataTable = tEnv.fromDataStream(env.fromCollection(PREDICT_DATA)).as("input");
@@ -111,8 +96,7 @@ public class MinMaxScalerTest {
                                 (MapFunction<Row, DenseVector>)
                                         row -> (DenseVector) row.getField(outputCol));
         List<DenseVector> result = IteratorUtils.toList(stream.executeAndCollect());
-        result.sort(MinMaxScalerTest::compare);
-        assertEquals(expected, result);
+        TestBaseUtils.compareResultCollections(expected, result, TestUtils::compare);
     }
 
     @Test
@@ -171,14 +155,37 @@ public class MinMaxScalerTest {
     }
 
     @Test
+    public void testInputTypeConversion() throws Exception {
+        trainDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, trainDataTable);
+        predictDataTable = TestUtils.convertDataTypesToSparseInt(tEnv, predictDataTable);
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class}, TestUtils.getColumnDataTypes(trainDataTable));
+        assertArrayEquals(
+                new Class<?>[] {SparseVector.class},
+                TestUtils.getColumnDataTypes(predictDataTable));
+
+        MinMaxScaler minMaxScaler = new MinMaxScaler();
+        MinMaxScalerModel minMaxScalerModel = minMaxScaler.fit(trainDataTable);
+        Table output = minMaxScalerModel.transform(predictDataTable)[0];
+        verifyPredictionResult(output, minMaxScaler.getOutputCol(), EXPECTED_DATA);
+    }
+
+    @Test
     public void testSaveLoadAndPredict() throws Exception {
         MinMaxScaler minMaxScaler = new MinMaxScaler();
         MinMaxScaler loadedMinMaxScaler =
-                StageTestUtils.saveAndReload(
-                        tEnv, minMaxScaler, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        minMaxScaler,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        MinMaxScaler::load);
         MinMaxScalerModel model = loadedMinMaxScaler.fit(trainDataTable);
         MinMaxScalerModel loadedModel =
-                StageTestUtils.saveAndReload(tEnv, model, tempFolder.newFolder().getAbsolutePath());
+                TestUtils.saveAndReload(
+                        tEnv,
+                        model,
+                        tempFolder.newFolder().getAbsolutePath(),
+                        MinMaxScalerModel::load);
         assertEquals(
                 Arrays.asList("minVector", "maxVector"),
                 model.getModelData()[0].getResolvedSchema().getColumnNames());
@@ -206,7 +213,7 @@ public class MinMaxScalerTest {
         MinMaxScalerModel modelA = minMaxScaler.fit(trainDataTable);
         Table modelData = modelA.getModelData()[0];
         MinMaxScalerModel modelB = new MinMaxScalerModel().setModelData(modelData);
-        ReadWriteUtils.updateExistingParams(modelB, modelA.getParamMap());
+        ParamUtils.updateExistingParams(modelB, modelA.getParamMap());
         Table output = modelB.transform(predictDataTable)[0];
         verifyPredictionResult(output, minMaxScaler.getOutputCol(), EXPECTED_DATA);
     }

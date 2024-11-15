@@ -27,9 +27,12 @@ import org.apache.flink.ml.common.broadcast.BroadcastUtils;
 import org.apache.flink.ml.common.datastream.TableUtils;
 import org.apache.flink.ml.common.distance.DistanceMeasure;
 import org.apache.flink.ml.linalg.DenseVector;
+import org.apache.flink.ml.linalg.Vector;
+import org.apache.flink.ml.linalg.VectorWithNorm;
 import org.apache.flink.ml.param.Param;
 import org.apache.flink.ml.util.ParamUtils;
 import org.apache.flink.ml.util.ReadWriteUtils;
+import org.apache.flink.ml.util.RowUtils;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -110,7 +113,7 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
 
         private final int k;
 
-        private DenseVector[] centroids;
+        private VectorWithNorm[] centroids;
 
         public PredictLabelFunction(
                 String broadcastModelKey,
@@ -130,11 +133,15 @@ public class KMeansModel implements Model<KMeansModel>, KMeansModelParams<KMeans
                         (KMeansModelData)
                                 getRuntimeContext().getBroadcastVariable(broadcastModelKey).get(0);
                 Preconditions.checkArgument(modelData.centroids.length <= k);
-                centroids = modelData.centroids;
+                centroids = new VectorWithNorm[modelData.centroids.length];
+                for (int i = 0; i < modelData.centroids.length; i++) {
+                    centroids[i] = new VectorWithNorm(modelData.centroids[i]);
+                }
             }
-            DenseVector point = (DenseVector) dataPoint.getField(featuresCol);
-            int closestCentroidId = KMeans.findClosestCentroidId(centroids, point, distanceMeasure);
-            return Row.join(dataPoint, Row.of(closestCentroidId));
+            DenseVector point = ((Vector) dataPoint.getField(featuresCol)).toDense();
+            int closestCentroidId =
+                    distanceMeasure.findClosest(centroids, new VectorWithNorm(point));
+            return RowUtils.append(dataPoint, closestCentroidId);
         }
     }
 
